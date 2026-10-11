@@ -1,0 +1,124 @@
+name: Build EPG
+
+# 定时预生成 EPG 并发布到静态托管：
+#   - GitHub Pages（默认，开箱即用）
+#   - Cloudflare R2（可选，国内访问更稳，需配置 3 个 Secret/Variable）
+#
+# 手动触发：Actions → Build EPG → Run workflow
+
+on:
+  schedule:
+    # UTC；对应北京时间 02:07 / 08:07 / 14:07 / 20:07
+    - cron: "7 0,6,12,18 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/build-epg.yml"
+
+permissions:
+  contents: write # 保活提交需要（防止定时任务因仓库长期无活动被停用）
+  pages: write
+  id-token: write
+
+# Pages 部署被中途取消会报错，所以不并发取消
+concurrency:
+  group: build-epg
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      r2: ${{ steps.r2.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # secrets 不能直接写在 if 里判断，先探测一次
+      - name: 探测 R2 配置
+        id: r2
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ] && [ -n "$R2_BUCKET" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "已配置 R2，构建后会同步上传。"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "未配置 R2（可选），仅发布 GitHub Pages。"
+          fi
+
+      - name: 生成 EPG
+        env:
+          EPG_SITE: ${{ vars.EPG_SITE || 'https://epg.fanxsc.cyou' }}
+          # Actions 环境下 raw.githubusercontent 直连最快；失败自动回退 jsDelivr / gitee
+          EPG_MIRRORS: ${{ vars.EPG_MIRRORS }}
+        run: node scripts/build-epg.mjs --out dist
+
+      - name: 校验产物
+        run: python3 scripts/verify.py dist/mini.xml dist/lite.xml dist/all.xml
+
+      - name: 打印构建摘要
+        run: |
+          cat dist/status.json
+          echo "---"
+          du -sh dist
+
+      # GitHub 会在仓库 60 天没有提交活动后停用定时工作流。
+      # 本方案不把产物提交进 git，所以这里补一个极小的保活提交。
+      # 不需要的话，把仓库 Variable KEEPALIVE 设为 false。
+      - name: 保活提交
+        if: ${{ vars.KEEPALIVE != 'false' }}
+        continue-on-error: true
+        run: |
+          mkdir -p .keepalive
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive/last-run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive/last-run.txt
+          if git diff --cached --quiet; then
+            echo "无变化，跳过提交"
+          else
+            git commit -m "chore: keepalive $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: 上传 Pages 产物
+        if: ${{ vars.ENABLE_PAGES != 'false' }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: 同步到 Cloudflare R2（可选）
+        if: steps.r2.outputs.enabled == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: ${{ vars.R2_PREFIX || 'epg' }}
+        run: |
+          for f in dist/*; do
+            [ -f "$f" ] || continue
+            key="${R2_BUCKET}/${R2_PREFIX}/$(basename "$f")"
+            echo "→ $key"
+            npx --yes wrangler@3 r2 object put "$key" --file "$f" --remote
+          done
+
+  deploy:
+    needs: build
+    if: ${{ vars.ENABLE_PAGES != 'false' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

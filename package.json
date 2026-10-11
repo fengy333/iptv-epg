@@ -1,0 +1,19 @@
+{
+  "name": "epg-fanxsc",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TV EPG 双方案：Workers 实时回源 + GitHub Actions 预生成静态托管",
+  "scripts": {
+    "build": "node scripts/build-epg.mjs --out dist",
+    "build:mini": "node scripts/build-epg.mjs --out dist --groups mini",
+    "build:lite": "node scripts/build-epg.mjs --out dist --groups lite",
+    "build:all": "node scripts/build-epg.mjs --out dist --groups all",
+    "verify": "python3 scripts/verify.py dist/epg/mini.xml dist/epg/lite.xml dist/epg/all.xml",
+    "serve": "node scripts/serve.mjs dist",
+    "deploy:worker": "npx wrangler deploy --name epg-fanxsc-test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
