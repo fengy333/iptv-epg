@@ -40,20 +40,32 @@ jobs:
         with:
           node-version: "20"
 
-      # secrets 不能直接写在 if 里判断，先探测一次
-      - name: 探测 R2 配置
+      # secrets / vars 不能直接写在 if 里判断，先探测一次
+      - name: 探测 Cloudflare 配置（可选）
         id: r2
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
+          KV_NS: ${{ vars.KV_NAMESPACE_ID }}
         run: |
-          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ] && [ -n "$R2_BUCKET" ]; then
+          has_cf=false
+          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then has_cf=true; fi
+
+          if [ "$has_cf" = true ] && [ -n "$R2_BUCKET" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "已配置 R2，构建后会同步上传。"
+            echo "→ 已配置 R2，构建后同步上传。"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "未配置 R2（可选），仅发布 GitHub Pages。"
+            echo "→ 未配置 R2（可选）。"
+          fi
+
+          if [ "$has_cf" = true ] && [ -n "$KV_NS" ]; then
+            echo "kv=true" >> "$GITHUB_OUTPUT"
+            echo "→ 已配置 Workers KV，构建后同步上传。"
+          else
+            echo "kv=false" >> "$GITHUB_OUTPUT"
+            echo "→ 未配置 Workers KV（可选）。"
           fi
 
       - name: 生成 EPG
@@ -114,6 +126,26 @@ jobs:
             echo "→ $key"
             wrangler r2 object put "$key" --file "$f" --remote
           done
+
+      # 这条是「国内可直连」的那条路：epg.fanxsc.cyou 由 worker-kv.js 从 KV 分发。
+      # 需要在仓库 Variables 里配 KV_NAMESPACE_ID，Secrets 里配 CF_API_TOKEN / CF_ACCOUNT_ID。
+      - name: 同步到 Workers KV（可选）
+        if: steps.r2.outputs.kv == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NS: ${{ vars.KV_NAMESPACE_ID }}
+        run: |
+          npm i -g wrangler@3 >/dev/null 2>&1
+          put() {
+            echo "→ KV $1  ($(stat -c%s "$2") B)"
+            wrangler kv key put --namespace-id "$KV_NS" "$1" --path "$2" --remote
+          }
+          put epg-mini.xml    dist/epg/mini.xml
+          put epg-lite.xml    dist/epg/lite.xml
+          put epg-mini.xml.gz dist/epg/mini.xml.gz
+          put epg-lite.xml.gz dist/epg/lite.xml.gz
+          put epg-all.xml.gz  dist/epg/all.xml.gz
 
   deploy:
     needs: build
