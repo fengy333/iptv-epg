@@ -50,12 +50,20 @@ jobs:
           R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
           KV_NS: ${{ vars.KV_NAMESPACE_ID || secrets.KV_NAMESPACE_ID }}
         run: |
-          mark() { if [ -n "$2" ]; then echo "  ✓ $1 = 已配置"; else echo "  ✗ $1 = 缺失"; fi }
+          # 逐项探测，同时写入 Job Summary（不开日志、不登录也能在运行页看到）
+          rows="| 配置项 | 状态 |\n| --- | --- |"
+          mark() {
+            if [ -n "$2" ]; then st="✅ 已配置"; else st="❌ 缺失"; fi
+            echo "  $st  $1"
+            rows="$rows\n| \`$1\` | $st |"
+          }
           echo "Cloudflare 配置探测："
           mark "secrets.CF_API_TOKEN" "$CF_API_TOKEN"
           mark "secrets.CF_ACCOUNT_ID" "$CF_ACCOUNT_ID"
-          mark "vars/secrets.R2_BUCKET" "$R2_BUCKET"
-          mark "vars/secrets.KV_NAMESPACE_ID" "$KV_NS"
+          mark "vars.R2_BUCKET / secrets.R2_BUCKET" "$R2_BUCKET"
+          mark "vars.KV_NAMESPACE_ID / secrets.KV_NAMESPACE_ID" "$KV_NS"
+
+          { echo "## Cloudflare 配置探测"; echo; printf "$rows\n"; } >> "$GITHUB_STEP_SUMMARY"
 
           has_cf=false
           if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then has_cf=true; fi
@@ -74,7 +82,10 @@ jobs:
           else
             echo "kv=false" >> "$GITHUB_OUTPUT"
             echo "→ 未配置 Workers KV（可选），本次跳过同步。"
-            echo "::warning title=Workers KV 同步已跳过::需要 secrets.CF_API_TOKEN + secrets.CF_ACCOUNT_ID + variables.KV_NAMESPACE_ID（三者缺一不可）"
+            {
+              echo
+              echo "> ⚠️ **Workers KV 同步已跳过**：需要同时具备 \`secrets.CF_API_TOKEN\`、\`secrets.CF_ACCOUNT_ID\`、\`vars.KV_NAMESPACE_ID\`（三者缺一不可；KV 命名空间 ID 也可放在 Secrets 里）。"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: 生成 EPG
@@ -159,6 +170,12 @@ jobs:
           # 回读校验：确认键真的写进了目标命名空间（防止写错 namespace id）
           echo "--- KV 现有键 ---"
           wrangler kv key list --namespace-id "$KV_NS" --remote
+
+          {
+            echo "## Workers KV 同步"
+            echo
+            echo "已上传 5 个键到命名空间 \`$KV_NS\`；https://epg.fanxsc.cyou 会在几十秒内更新。"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     needs: build
