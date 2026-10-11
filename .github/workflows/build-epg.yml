@@ -40,15 +40,23 @@ jobs:
         with:
           node-version: "20"
 
-      # secrets / vars 不能直接写在 if 里判断，先探测一次
+      # secrets / vars 不能直接写在 if 里判断，先探测一次。
+      # KV_NAMESPACE_ID / R2_BUCKET 支持放在 Variables 或 Secrets 任意一处（vars 优先）。
       - name: 探测 Cloudflare 配置（可选）
         id: r2
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-          KV_NS: ${{ vars.KV_NAMESPACE_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
+          KV_NS: ${{ vars.KV_NAMESPACE_ID || secrets.KV_NAMESPACE_ID }}
         run: |
+          mark() { if [ -n "$2" ]; then echo "  ✓ $1 = 已配置"; else echo "  ✗ $1 = 缺失"; fi }
+          echo "Cloudflare 配置探测："
+          mark "secrets.CF_API_TOKEN" "$CF_API_TOKEN"
+          mark "secrets.CF_ACCOUNT_ID" "$CF_ACCOUNT_ID"
+          mark "vars/secrets.R2_BUCKET" "$R2_BUCKET"
+          mark "vars/secrets.KV_NAMESPACE_ID" "$KV_NS"
+
           has_cf=false
           if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then has_cf=true; fi
 
@@ -65,7 +73,8 @@ jobs:
             echo "→ 已配置 Workers KV，构建后同步上传。"
           else
             echo "kv=false" >> "$GITHUB_OUTPUT"
-            echo "→ 未配置 Workers KV（可选）。"
+            echo "→ 未配置 Workers KV（可选），本次跳过同步。"
+            echo "::warning title=Workers KV 同步已跳过::需要 secrets.CF_API_TOKEN + secrets.CF_ACCOUNT_ID + variables.KV_NAMESPACE_ID（三者缺一不可）"
           fi
 
       - name: 生成 EPG
@@ -116,7 +125,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
           R2_PREFIX: ${{ vars.R2_PREFIX }}
         run: |
           npm i -g wrangler@3 >/dev/null 2>&1
@@ -134,7 +143,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          KV_NS: ${{ vars.KV_NAMESPACE_ID }}
+          KV_NS: ${{ vars.KV_NAMESPACE_ID || secrets.KV_NAMESPACE_ID }}
         run: |
           npm i -g wrangler@3 >/dev/null 2>&1
           put() {
@@ -146,6 +155,10 @@ jobs:
           put epg-mini.xml.gz dist/epg/mini.xml.gz
           put epg-lite.xml.gz dist/epg/lite.xml.gz
           put epg-all.xml.gz  dist/epg/all.xml.gz
+
+          # 回读校验：确认键真的写进了目标命名空间（防止写错 namespace id）
+          echo "--- KV 现有键 ---"
+          wrangler kv key list --namespace-id "$KV_NS" --remote
 
   deploy:
     needs: build
