@@ -1,4 +1,4 @@
-# github-epg · GitHub Actions 定时预生成 + 静态托管
+# Iptv-Epg · GitHub Actions 定时预生成 + 静态托管
 
 > 配套的 Workers 实时回源方案在 `../cf-epg/`。
 
